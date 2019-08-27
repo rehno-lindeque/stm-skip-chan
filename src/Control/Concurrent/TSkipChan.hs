@@ -2,8 +2,10 @@ module Control.Concurrent.TSkipChan where
 
 import Control.Concurrent.STM (STM)
 import Control.Concurrent.STM.TVar (TVar, newTVar, stateTVar)
-import Control.Concurrent.STM.TMVar (TMVar, newTMVar, takeTMVar, putTMVar)
-import Data.Foldable (for_)
+import Control.Concurrent.STM.TMVar (TMVar, newTMVar, takeTMVar, tryTakeTMVar, putTMVar)
+import Data.Foldable (for_, asum)
+import Data.Traversable (for)
+import Control.Applicative ((<|>))
 
 data TSkipChan a = TSkipChan (TVar (a, [TMVar ()])) (TMVar ())
 
@@ -27,6 +29,21 @@ takeTSkipChan (TSkipChan main sem) = do
   takeTMVar sem
   a <- stateTVar main (\(a, sems) -> (a, (a, sem:sems)))
   return a
+
+{-# inline takeMergedTSkipChan #-}
+takeMergedTSkipChan :: [TSkipChan a] -> STM [a]
+takeMergedTSkipChan chans = do
+  case chans of
+    [] -> return []
+    _ -> do
+      takeAnyAndEveryTMVar (map (\(TSkipChan _ sem) -> sem) chans)
+      for chans $ \(TSkipChan main sem) ->
+        stateTVar main (\(a, sems) -> (a, (a, sem:sems)))
+  where
+    takeAnyAndEveryTMVar [c] = takeTMVar c
+    takeAnyAndEveryTMVar (c:cs) =
+      (takeTMVar c >> mapM_ tryTakeTMVar cs)
+        <|> takeAnyAndEveryTMVar cs
 
 {-# inline dupTSkipChan #-}
 dupTSkipChan :: TSkipChan a -> STM (TSkipChan a)
